@@ -1,0 +1,155 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — In-cluster interop Job (BONUS, documented but NOT applied
+# by `make demo-interop`). Shows how a CI/CD pipeline running inside the
+# cluster would perform Flex <-> CNPG migrations using Workload Identity, with
+# zero passwords on either side.
+#
+# Prerequisites (run ONCE before `kubectl apply -f` this file):
+#
+# 1. Federated credential for SA `pg-interop` in namespace `pg-demo`:
+#
+#    OIDC_ISSUER=$(az aks show -g rg-pgha-demo -n aks-pgha-demo \
+#       --query oidcIssuerProfile.issuerUrl -o tsv)
+#    az identity federated-credential create \
+#       --name fic-pg-interop-pg-demo \
+#       --identity-name mi-stpghademo7141-backup \
+#       --resource-group rg-pgha-demo \
+#       --issuer "$OIDC_ISSUER" \
+#       --subject system:serviceaccount:pg-demo:pg-interop \
+#       --audiences api://AzureADTokenExchange
+#
+# 2. Add the UAMI as an AAD principal *inside* Flex (PostgreSQL role) so
+#    Flex accepts AAD tokens issued for that identity. Connect as the AAD
+#    admin (your user) and run:
+#
+#    SELECT * FROM pgaadauth_create_principal(
+#       'mi-stpghademo7141-backup', false, false);
+#    GRANT CONNECT  ON DATABASE app_demo TO "mi-stpghademo7141-backup";
+#    \c app_demo
+#    GRANT USAGE   ON SCHEMA public                TO "mi-stpghademo7141-backup";
+#    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
+#                                                  TO "mi-stpghademo7141-backup";
+#    GRANT USAGE   ON ALL SEQUENCES IN SCHEMA public
+#                                                  TO "mi-stpghademo7141-backup";
+#
+# 3. Apply this manifest:
+#
+#    kubectl apply -f manifests/11-interop-job.yaml
+#    kubectl -n pg-demo logs -f job/pg-interop-flex-to-cnpg
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pg-interop
+  namespace: pg-demo
+  annotations:
+    # clientId of `mi-stpghademo7141-backup`
+    azure.workload.identity/client-id: "c1fbfeea-570a-4d6e-84c2-6557fa43fc6b"
+  labels:
+    azure.workload.identity/use: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-interop-script
+  namespace: pg-demo
+data:
+  run.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    : "${MODE:?MODE=flex-to-cnpg|cnpg-to-flex}"
+    : "${FLEX_FQDN:?}"
+    : "${INTEROP_DB:?}"
+    : "${CNPG_RW_HOST:?}"
+    : "${CNPG_USER:=appuser}"
+    : "${CNPG_PASSWORD:?}"
+    : "${FLEX_PG_ROLE:?Set to the AAD role created via pgaadauth_create_principal}"
+
+    # ---- Workload Identity → AAD token for Flex (PG resource) -----------------
+    # The WI mutating webhook injected AZURE_TENANT_ID, AZURE_CLIENT_ID,
+    # AZURE_FEDERATED_TOKEN_FILE. Exchange the SA JWT for an AAD access token.
+    SA_TOKEN=$(cat "$AZURE_FEDERATED_TOKEN_FILE")
+    RESPONSE=$(curl -sS -X POST \
+      "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+      -d "grant_type=client_credentials" \
+      -d "client_id=${AZURE_CLIENT_ID}" \
+      -d "scope=https://ossrdbms-aad.database.windows.net/.default" \
+      -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+      -d "client_assertion=${SA_TOKEN}")
+    FLEX_TOKEN=$(echo "$RESPONSE" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+    [[ -n "$FLEX_TOKEN" ]] || { echo "Failed to acquire AAD token: $RESPONSE"; exit 1; }
+
+    DUMP=/tmp/payload.dump
+
+    case "$MODE" in
+      flex-to-cnpg)
+        PGPASSWORD="$FLEX_TOKEN" pg_dump --format=custom --no-owner --no-acl \
+          --no-publications --no-subscriptions --table=public.demo_skus \
+          -h "$FLEX_FQDN" -U "$FLEX_PG_ROLE" -d "$INTEROP_DB" -f "$DUMP"
+        PGPASSWORD="$CNPG_PASSWORD" pg_restore --no-owner --no-acl --clean --if-exists \
+          -h "$CNPG_RW_HOST" -U "$CNPG_USER" -d "$INTEROP_DB" "$DUMP"
+        ;;
+      cnpg-to-flex)
+        PGPASSWORD="$CNPG_PASSWORD" pg_dump --format=custom --no-owner --no-acl \
+          --no-publications --no-subscriptions --table=public.demo_audit \
+          -h "$CNPG_RW_HOST" -U "$CNPG_USER" -d "$INTEROP_DB" -f "$DUMP"
+        PGPASSWORD="$FLEX_TOKEN" pg_restore --no-owner --no-acl --clean --if-exists \
+          -h "$FLEX_FQDN" -U "$FLEX_PG_ROLE" -d "$INTEROP_DB" "$DUMP"
+        ;;
+      *) echo "Unknown MODE=$MODE"; exit 1 ;;
+    esac
+
+    echo "✅ $MODE completed."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-interop-flex-to-cnpg
+  namespace: pg-demo
+  labels:
+    app: pg-interop
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: pg-interop
+      restartPolicy: Never
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: postgresql
+          effect: NoSchedule
+      containers:
+        - name: pg-interop
+          image: postgres:17
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/work/run.sh"]
+          env:
+            - name: MODE
+              value: "flex-to-cnpg"
+            - name: FLEX_FQDN
+              value: "demo-flex-postgres.postgres.database.azure.com"
+            - name: INTEROP_DB
+              value: "app_demo"
+            - name: CNPG_RW_HOST
+              value: "pg-demo-rw.pg-demo.svc.cluster.local"
+            - name: FLEX_PG_ROLE
+              value: "mi-stpghademo7141-backup"
+            - name: CNPG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-demo-app
+                  key: password
+          volumeMounts:
+            - name: script
+              mountPath: /work
+      volumes:
+        - name: script
+          configMap:
+            name: pg-interop-script
+            defaultMode: 0555

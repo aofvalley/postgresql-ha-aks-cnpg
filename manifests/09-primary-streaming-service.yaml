@@ -1,0 +1,29 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Public LoadBalancer for cross-cluster streaming replication
+#
+# Apply to PRIMARY cluster (aks-pgha-demo) before bootstrapping the replica.
+# After apply, get the LB IP with:
+#   kubectl -n pg-demo get svc pg-demo-streaming-lb \
+#     -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# NOTE: Port 5432 exposed publicly for demo simplicity.
+# For production: use loadBalancerSourceRanges or Azure Private Link.
+# CNPG enforces mutual TLS for replication — traffic is encrypted.
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-demo-streaming-lb
+  namespace: pg-demo
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+spec:
+  type: LoadBalancer
+  selector:
+    cnpg.io/cluster: pg-demo
+    role: primary
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+      protocol: TCP

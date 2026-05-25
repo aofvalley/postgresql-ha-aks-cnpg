@@ -1,0 +1,150 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — PostgreSQL Cluster (CNPG 1.28)
+#
+# Topology:
+#   - 3 instances: 1 primary + 2 streaming replicas, one per AZ
+#   - PG 16 (stable) — image ghcr.io/cloudnative-pg/postgresql:16
+#   - 4 vCPU / 16 GiB per pod (well within Standard_D16ds_v5 budget)
+#   - 100 GiB DATA + separate 32 GiB WAL on Premium SSD v2 ZRS
+#   - Pod anti-affinity by zone (topology.kubernetes.io/zone)
+#   - Monitoring exporter exposed on port 9187 (PodMonitor in 07-monitoring-podmonitor.yaml)
+#
+# Backups: deprecated `.spec.backup.barmanObjectStore` is used here for clarity
+# in the demo. CNPG 1.28+ recommends migrating to the Barman Cloud Plugin
+# (.spec.plugins). See TODO below.
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-demo
+  namespace: pg-demo
+spec:
+  description: "Demo demo HA PostgreSQL cluster (CNPG 1.28)"
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  instances: 3
+  startDelay: 60
+  stopDelay: 100
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL tuning. Sized for 4 vCPU / 16 GiB pod. Adjust per workload.
+  # --------------------------------------------------------------------------
+  postgresql:
+    parameters:
+      shared_buffers: "4GB"               # ~25% of pod memory
+      effective_cache_size: "12GB"        # ~75% of pod memory
+      work_mem: "32MB"
+      maintenance_work_mem: "512MB"
+      max_connections: "200"              # use PgBouncer (05-pgbouncer-pooler.yaml) for higher
+      max_worker_processes: "16"
+      max_parallel_workers: "8"
+      max_parallel_workers_per_gather: "4"
+      checkpoint_completion_target: "0.9"
+      wal_compression: "on"
+      random_page_cost: "1.1"             # Premium SSD v2 -> low cost vs sequential
+      effective_io_concurrency: "200"
+      log_min_duration_statement: "500ms"
+      log_checkpoints: "on"
+      log_connections: "off"
+      log_disconnections: "off"
+      log_lock_waits: "on"
+
+  # --------------------------------------------------------------------------
+  # Bootstrap: create demo DB + app user (password stored in cluster-app secret)
+  # --------------------------------------------------------------------------
+  bootstrap:
+    initdb:
+      database: appdb
+      owner: appuser
+      encoding: UTF8
+      localeCollate: en_US.utf8
+      localeCType: en_US.utf8
+
+  # --------------------------------------------------------------------------
+  # Resources — single source of truth for both quality-of-service and tuning
+  # --------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: "4"
+      memory: "16Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+
+  # --------------------------------------------------------------------------
+  # Storage — separate DATA + WAL volumes on Premium SSD v2 ZRS
+  # --------------------------------------------------------------------------
+  storage:
+    size: 100Gi
+    storageClass: managed-csi-premium-v2-zrs
+  walStorage:
+    size: 32Gi
+    storageClass: managed-csi-premium-v2-zrs
+
+  # --------------------------------------------------------------------------
+  # Affinity — one replica per AZ; tolerate the pgpool taint
+  # --------------------------------------------------------------------------
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+    podAntiAffinityType: required
+    nodeSelector:
+      workload: postgresql
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: postgresql
+        effect: NoSchedule
+
+  # --------------------------------------------------------------------------
+  # Monitoring — built-in exporter on :9187 scraped by PodMonitor
+  # --------------------------------------------------------------------------
+  monitoring:
+    enablePodMonitor: false   # PodMonitor created explicitly in 07-monitoring-podmonitor.yaml
+
+  # --------------------------------------------------------------------------
+  # Workload Identity — label propagates to pods so the WI webhook injects
+  # AZURE_FEDERATED_TOKEN_FILE. Without this, barman falls back to managed
+  # identity which fails when multiple UAMIs are attached to the node.
+  # --------------------------------------------------------------------------
+  inheritedMetadata:
+    labels:
+      azure.workload.identity/use: "true"
+
+  # --------------------------------------------------------------------------
+  # Service account — annotated by bootstrap script for Workload Identity
+  # --------------------------------------------------------------------------
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        azure.workload.identity/client-id: "${BACKUP_IDENTITY_CLIENT_ID}"
+      labels:
+        azure.workload.identity/use: "true"
+
+  # --------------------------------------------------------------------------
+  # Backup — DEPRECATED path (.spec.backup.barmanObjectStore).
+  # TODO(CNPG 1.29): migrate to the Barman Cloud Plugin via .spec.plugins.
+  # See https://cloudnative-pg.io/docs/1.28/backup_barmanobjectstore/
+  # --------------------------------------------------------------------------
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: "https://${STORAGE_ACCOUNT}.blob.core.windows.net/${BACKUP_CONTAINER}"
+      azureCredentials:
+        # Workload Identity path (preferred). Comment this block and uncomment the
+        # storageAccount/storageKey block below to use Option B (Storage Account Key).
+        inheritFromAzureAD: true
+        # storageAccount:
+        #   name: pg-backup-azure
+        #   key: AZURE_STORAGE_ACCOUNT
+        # storageKey:
+        #   name: pg-backup-azure
+        #   key: AZURE_STORAGE_KEY
+      wal:
+        compression: gzip
+        maxParallel: 8
+      data:
+        compression: gzip
+        immediateCheckpoint: false
+        jobs: 2

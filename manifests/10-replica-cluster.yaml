@@ -1,0 +1,69 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Replica Cluster CR (apply to SECONDARY AKS)
+#
+# Pre-requisites (handled by scripts/13-demo-cross-cluster.sh setup phase):
+#   1. PRIMARY_LB_IP env var set to the LoadBalancer IP of 09-primary-streaming-service
+#   2. Replication secrets copied from primary to secondary namespace:
+#        kubectl -n pg-demo get secret pg-demo-replication -o yaml | \
+#          kubectl --context aks-pgha-demo-2 -n pg-demo apply -f -
+#        kubectl -n pg-demo get secret pg-demo-ca -o yaml | \
+#          kubectl --context aks-pgha-demo-2 -n pg-demo apply -f -
+#
+# Apply with:
+#   PRIMARY_LB_IP=<ip> envsubst < manifests/10-replica-cluster.yaml | \
+#     kubectl --context aks-pgha-demo-2 apply -f -
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-demo-replica
+  namespace: pg-demo
+spec:
+  description: "Demo demo — Replica Cluster (secondary AKS)"
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  instances: 1
+
+  bootstrap:
+    pg_basebackup:
+      source: pg-demo-primary
+
+  replica:
+    enabled: true
+    source: pg-demo-primary
+
+  externalClusters:
+    - name: pg-demo-primary
+      connectionParameters:
+        host: "${PRIMARY_LB_IP}"
+        user: streaming_replica
+        dbname: postgres
+        port: "5432"
+        sslmode: verify-ca     # LB IP not in cert SANs; verify-ca checks chain without hostname
+      sslKey:
+        name: pg-demo-replication
+        key: tls.key
+      sslCert:
+        name: pg-demo-replication
+        key: tls.crt
+      sslRootCert:
+        name: pg-demo-ca
+        key: ca.crt
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: "4Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+
+  storage:
+    size: 20Gi
+  walStorage:
+    size: 8Gi
+
+  postgresql:
+    parameters:
+      shared_buffers: "1GB"
+      max_connections: "100"
+      log_min_duration_statement: "1000ms"

@@ -1,0 +1,26 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Prometheus PodMonitor scraping CNPG metrics on :9187
+# Requires Prometheus Operator CRDs (kube-prometheus-stack or managed Prometheus
+# with Azure Monitor metrics — chart auto-discovers PodMonitors).
+# ----------------------------------------------------------------------------
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: pg-demo
+  namespace: pg-demo
+  labels:
+    release: kube-prometheus-stack   # adjust to your Prometheus selector
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: pg-demo
+  podMetricsEndpoints:
+    - port: metrics                  # CNPG exporter port name
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_cnpg_io_instanceRole]
+          targetLabel: instance_role
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

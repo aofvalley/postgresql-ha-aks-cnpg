@@ -1,0 +1,60 @@
+# ----------------------------------------------------------------------------
+# Adapted CNPG cluster for adv_aks (single-zone, 2x D4ds_v4)
+#   - 2 instances (1 primary + 1 replica)
+#   - No zone-based topology spread (single zone nodepool)
+#   - managed-csi storage class (Premium SSD LRS, AKS default)
+#   - No backup, no monitoring PodMonitor, no Workload Identity SA
+#   - Minimal resources to fit on D4ds_v4 alongside system pods
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-demo
+  namespace: pg-demo
+spec:
+  description: "adv_aks demo HA PostgreSQL cluster (CNPG 1.28)"
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  instances: 2
+  startDelay: 60
+  stopDelay: 100
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      work_mem: "8MB"
+      maintenance_work_mem: "64MB"
+      max_connections: "100"
+      checkpoint_completion_target: "0.9"
+      wal_compression: "on"
+      random_page_cost: "1.1"
+      log_min_duration_statement: "500ms"
+      log_checkpoints: "on"
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: appuser
+      encoding: UTF8
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  storage:
+    size: 5Gi
+    storageClass: managed-csi
+  walStorage:
+    size: 2Gi
+    storageClass: managed-csi
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required

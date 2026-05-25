@@ -1,0 +1,79 @@
+# ----------------------------------------------------------------------------
+# CNPG cluster — adv_aks DEMO TOP MODE
+#   - 3 instances (1 primary + 2 replicas) spread across 3 AZ
+#   - Premium SSD v2 ZRS (10000 IOPS, 400 MB/s)
+#   - Pinned to pgpool nodepool (workload=postgres taint/label)
+#   - Topology spread: max 1 replica per zone
+#   - Resources sized for D8ds_v5 (8 vCPU / 32 GB RAM)
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-demo
+  namespace: pg-demo
+spec:
+  description: "adv_aks DEMO TOP MODE — Demo-style HA PostgreSQL (CNPG 1.28)"
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  instances: 3
+  startDelay: 60
+  stopDelay: 100
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  postgresql:
+    parameters:
+      shared_buffers: "8GB"
+      effective_cache_size: "24GB"
+      work_mem: "32MB"
+      maintenance_work_mem: "1GB"
+      max_connections: "200"
+      max_worker_processes: "16"
+      max_parallel_workers: "8"
+      max_parallel_workers_per_gather: "4"
+      checkpoint_completion_target: "0.9"
+      wal_compression: "on"
+      wal_buffers: "16MB"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "256"
+      log_min_duration_statement: "500ms"
+      log_checkpoints: "on"
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: appuser
+      encoding: UTF8
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: "12Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+
+  storage:
+    size: 50Gi
+    storageClass: managed-csi-premium-v2-zrs
+  walStorage:
+    size: 10Gi
+    storageClass: managed-csi-premium-v2-zrs
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+    nodeSelector:
+      workload: postgres
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: postgres
+        effect: NoSchedule
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            cnpg.io/cluster: pg-demo

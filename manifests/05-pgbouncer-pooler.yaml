@@ -1,0 +1,36 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — PgBouncer Pooler (read-write)
+# Sits between apps and the cluster-rw service. CNPG manages the PgBouncer
+# Deployment + ConfigMap automatically.
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pg-demo-rw-pooler
+  namespace: pg-demo
+spec:
+  cluster:
+    name: pg-demo
+  instances: 3                       # one PgBouncer pod per AZ
+  type: rw                           # routes to the current primary
+  pgbouncer:
+    poolMode: transaction            # best for short-lived web/app workloads
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "100"
+      reserve_pool_size: "20"
+      reserve_pool_timeout: "5"
+      log_connections: "0"
+      log_disconnections: "0"
+      log_pooler_errors: "1"
+  monitoring:
+    enablePodMonitor: false          # use Prometheus PodMonitor in 07-monitoring-podmonitor.yaml if needed
+  template:
+    spec:
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: postgresql
+          effect: NoSchedule
+      containers:
+        - name: pgbouncer

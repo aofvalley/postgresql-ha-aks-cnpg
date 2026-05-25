@@ -1,0 +1,35 @@
+# Local environment
+.env
+.env.local
+*.local
+
+# Kubeconfigs
+*.kubeconfig
+kubeconfig
+.kube/
+
+# Terraform (in case someone adds TF later)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Bicep build outputs
+infra/*.json
+
+# Secrets
+*.pfx
+*.pem
+*.key
+secret-*.yaml
+03-backup-secret.yaml
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

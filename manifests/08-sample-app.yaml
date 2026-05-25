@@ -1,0 +1,77 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Sample app
+# A tiny psql-based pod that loops a SELECT against the cluster-rw service to
+# illustrate connectivity + observe behavior during failover.
+# ----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: psql-client
+  namespace: pg-demo
+  labels:
+    app: psql-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: psql-client
+  template:
+    metadata:
+      labels:
+        app: psql-client
+    spec:
+      containers:
+        - name: psql
+          image: ghcr.io/cloudnative-pg/postgresql:16
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "Sample app -- looping SELECT against cluster-rw"
+              while true; do
+                date "+%Y-%m-%dT%H:%M:%S%z"
+                PGPASSWORD="$APP_PASSWORD" psql \
+                  -h pg-demo-rw \
+                  -U appuser -d appdb \
+                  -c "SELECT now() AS now, inet_server_addr() AS server, current_database() AS db" \
+                  -tA --no-psqlrc 2>&1 || echo "[psql ERROR — usual during failover]"
+                sleep 2
+              done
+          env:
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-demo-app          # CNPG creates this automatically
+                  key: password
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: postgresql
+          effect: NoSchedule
+      nodeSelector:
+        workload: postgresql
+---
+# ----------------------------------------------------------------------------
+# Convenience service: gives the demo a stable endpoint name (`sample-app`)
+# even though psql-client is the only consumer right now.
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: pg-demo
+spec:
+  selector:
+    app: psql-client
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP

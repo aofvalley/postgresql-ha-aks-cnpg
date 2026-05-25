@@ -1,0 +1,24 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Premium SSD v2 (ZRS) StorageClass
+#
+# Why Premium SSD v2:
+#   - Sub-millisecond IOPS, independent IOPS/throughput scaling vs disk size
+#   - ZRS (when supported in region) keeps data durable across 3 zones
+#   - Allows volume expansion online (allowVolumeExpansion: true)
+# Why WaitForFirstConsumer:
+#   - Pod scheduling decides the AZ first, so the disk lands in the same zone.
+#     Avoids zone-mismatch errors on multi-AZ clusters.
+# ----------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: managed-csi-premium-v2-zrs
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: PremiumV2_LRS          # ZRS variant not yet GA in uksouth; LRS correct for multi-AZ CNPG (replicas provide logical durability)
+  cachingMode: None               # Premium v2 does not support host caching
+  DiskIOPSReadWrite: "5000"       # baseline IOPS for 100GB volume
+  DiskMBpsReadWrite: "200"        # baseline throughput
+reclaimPolicy: Delete             # PoC convenience; use Retain for prod
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

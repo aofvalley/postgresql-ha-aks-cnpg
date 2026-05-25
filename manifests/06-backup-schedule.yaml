@@ -1,0 +1,17 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Daily full backup to Azure Blob via Barman
+# WAL archive runs continuously regardless of this schedule (set on the Cluster).
+# Cron format is the standard 6-field with seconds at the front.
+# ----------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: pg-demo-daily
+  namespace: pg-demo
+spec:
+  schedule: "0 0 2 * * *"            # 02:00 every day (UTC)
+  backupOwnerReference: self
+  cluster:
+    name: pg-demo
+  immediate: true                    # take the first backup right after applying
+  method: barmanObjectStore          # paired with Cluster.spec.backup

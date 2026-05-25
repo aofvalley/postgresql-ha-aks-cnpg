@@ -1,0 +1,19 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — namespaces
+#   - cnpg-system : operator + webhook
+#   - pg-demo     : Cluster, Pooler, sample app, backups
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pg-demo
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    azure.workload.identity/use: "true"  # required so workload identity webhook injects tokens

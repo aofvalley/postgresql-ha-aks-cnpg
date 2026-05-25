@@ -1,0 +1,31 @@
+# ----------------------------------------------------------------------------
+# Demo CNPG PoC — Operator install
+# CNPG 1.28 is installed via Helm (chart bundles CRDs). DO NOT apply this file
+# directly with kubectl; instead run the Helm command below.
+#
+# ---- prerequisite: cert-manager (CNPG webhook needs it) -----------------------
+# helm repo add jetstack https://charts.jetstack.io
+# helm repo update
+# helm upgrade --install cert-manager jetstack/cert-manager \
+#   --namespace cert-manager --create-namespace \
+#   --version v1.15.3 --set crds.enabled=true
+#
+# ---- CNPG operator (chart 0.22.x bundles CNPG 1.28.x) -----------------------
+# helm repo add cnpg https://cloudnative-pg.github.io/charts
+# helm repo update
+# helm upgrade --install cnpg cnpg/cloudnative-pg \
+#   --namespace cnpg-system --create-namespace \
+#   --version 0.22.1 \
+#   --set monitoring.podMonitorEnabled=true \
+#   --set monitoring.grafanaDashboard.create=true
+#
+# ---- Barman Cloud Plugin (recommended in CNPG 1.28+, replaces deprecated
+#      .spec.backup.barmanObjectStore on Cluster CR) -------------------------
+# kubectl apply -f https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.5.0/manifest.yaml
+#
+# ---- kubectl-cnpg plugin (operator helper, used by demo scripts) ------------
+# kubectl krew install cnpg
+#
+# This file is kept as documentation. The bootstrap script `scripts/01-bootstrap.sh`
+# wraps every command above with idempotency checks.
+# ----------------------------------------------------------------------------
